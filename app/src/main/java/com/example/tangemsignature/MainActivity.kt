@@ -32,6 +32,12 @@ import java.security.spec.X509EncodedKeySpec
 import java.security.KeyFactory
 import java.util.concurrent.atomic.AtomicBoolean
 
+private fun CardSession.performCommand(
+    signHashCommand: SignHashCommand,
+    function: (CompletionResult<SignHashResponse>) -> Unit
+) {
+}
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var sdk: TangemSdk
@@ -383,7 +389,7 @@ fun SignScreen(
         }
         Text(resultText)
     }
-}
+}}
 
 
 
