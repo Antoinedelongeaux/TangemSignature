@@ -18,9 +18,8 @@ import com.tangem.TangemSdk
 import com.tangem.common.CompletionResult
 import com.tangem.common.card.EllipticCurve
 import com.tangem.crypto.hdWallet.DerivationPath
-import com.tangem.common.core.CardSession
+import com.tangem.operations.derivation.DeriveWalletPublicKeyTask
 import com.tangem.operations.sign.SignHashCommand
-import com.tangem.operations.sign.SignHashResponse
 import com.tangem.sdk.extensions.init
 import java.io.ByteArrayOutputStream
 import java.math.BigInteger
@@ -31,12 +30,6 @@ import java.security.interfaces.ECPublicKey
 import java.security.spec.X509EncodedKeySpec
 import java.security.KeyFactory
 import java.util.concurrent.atomic.AtomicBoolean
-
-private fun CardSession.performCommand(
-    signHashCommand: SignHashCommand,
-    function: (CompletionResult<SignHashResponse>) -> Unit
-) {
-}
 
 class MainActivity : ComponentActivity() {
 
@@ -93,81 +86,85 @@ class MainActivity : ComponentActivity() {
                     val cardId = card.cardId!!
                     val masterWalletPub = wallet.publicKey
 
-                    // chemins BIP84 à tester
-                    val derivationPaths = listOf(
-                        DerivationPath("m/84'/0'/0'/0/0"),
-                        DerivationPath("m/84'/0'/0'/0/1"),
-                        DerivationPath("m/84'/0'/0'/1/0")
-                    )
+                    // génère plusieurs chemins BIP84 à tester
+                    val derivationPaths = buildList {
+                        for (branch in 0..1) {
+                            for (index in 0 until 20) {
+                                add(DerivationPath("m/84'/0'/0'/$branch/$index"))
+                            }
+                        }
+                    }
 
-                    fun tryNextPath(index: Int) {
-                        if (index >= derivationPaths.size) {
+                    fun tryNextPath(i: Int) {
+                        if (i >= derivationPaths.size) {
                             finishWork { onResult("❌ Aucun chemin BIP84 testé n’a correspondu à $address") }
                             return
                         }
 
-                        val path = derivationPaths[index]
+                        val path = derivationPaths[i]
 
+                        // dérive la clé publique pour calculer l'adresse correspondante
                         sdk.startSessionWithRunnable(
-                            object : com.tangem.common.core.CardSessionRunnable<SignHashResponse> {
-                                override fun run(
-                                    session: CardSession,
-                                    callback: (CompletionResult<SignHashResponse>) -> Unit
-                                ) {
-                                    session.performCommand(
-                                        SignHashCommand(
-                                            hash = digest,
-                                            walletPublicKey = masterWalletPub,
-                                            derivationPath = path
-                                        )
-                                    ) { signResult: CompletionResult<SignHashResponse> ->
-                                        callback(signResult)
-                                    }
-                                }
-                            },
+                            DeriveWalletPublicKeyTask(masterWalletPub, path),
                             initialMessage = null,
                             cardId = cardId
-                        ) { signResult ->
-                            when (signResult) {
+                        ) { deriveResult ->
+                            when (deriveResult) {
                                 is CompletionResult.Success -> {
-                                    val response = signResult.data
-                                    val rawSig = response.signature
-                                    val der = raw64ToDerLowS(rawSig)
-                                    val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
-                                    val derivedPubKey = response.walletPublicKey ?: masterWalletPub
-                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(derivedPubKey))
+                                    val derivedPub = deriveResult.data.publicKey
+                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(derivedPub))
 
                                     mainHandler.post {
                                         onResult("🔎 Test chemin $path → adresse dérivée $derivedAddr")
                                     }
 
                                     if (derivedAddr == address) {
-                                        mainHandler.post {
-                                            finishWork {
-                                                onResult(
-                                                    """
-                                                ✅ Chemin trouvé: $path
-                                                Adresse: $derivedAddr
-                                                Signature DER (base64): $base64
-                                                """.trimIndent()
-                                                )
+                                        sdk.startSessionWithRunnable(
+                                            SignHashCommand(
+                                                hash = digest,
+                                                walletPublicKey = masterWalletPub,
+                                                derivationPath = path
+                                            ),
+                                            initialMessage = null,
+                                            cardId = cardId
+                                        ) { signResult ->
+                                            when (signResult) {
+                                                is CompletionResult.Success -> {
+                                                    val rawSig = signResult.data.signature
+                                                    val der = raw64ToDerLowS(rawSig)
+                                                    val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
+                                                    mainHandler.post {
+                                                        finishWork {
+                                                            onResult(
+                                                                """
+                                                            ✅ Chemin trouvé: $path
+                                                            Adresse: $derivedAddr
+                                                            Signature DER (base64): $base64
+                                                            """.trimIndent(),
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                                is CompletionResult.Failure -> {
+                                                    finishWork { onResult("⚠️ Erreur signature: ${signResult.error}") }
+                                                }
                                             }
                                         }
                                     } else {
-                                        tryNextPath(index + 1)
+                                        tryNextPath(i + 1)
                                     }
                                 }
                                 is CompletionResult.Failure -> {
                                     mainHandler.post {
-                                        onResult("⚠️ Erreur signature avec chemin $path: ${signResult.error}")
+                                        onResult("⚠️ Erreur dérivation avec chemin $path: ${deriveResult.error}")
                                     }
-                                    tryNextPath(index + 1)
+                                    tryNextPath(i + 1)
                                 }
                             }
                         }
                     }
 
-                    // on commence avec le premier chemin
+                    // commence avec le premier chemin
                     tryNextPath(0)
                 }
 
@@ -177,6 +174,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
 
     private fun finishWork(action: () -> Unit) {
         runOnUiThread { try { action() } finally { isWorking.set(false) } }
