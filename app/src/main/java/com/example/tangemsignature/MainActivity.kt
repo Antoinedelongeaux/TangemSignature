@@ -22,7 +22,10 @@ import com.tangem.common.CompletionResult
 import com.tangem.common.card.EllipticCurve
 import com.tangem.crypto.hdWallet.DerivationPath
 import com.tangem.common.extensions.toHexString
+import com.tangem.common.core.CardSession
+import com.tangem.operations.sign.SignHashCommand
 import com.tangem.operations.sign.SignHashResponse
+import com.tangem.operations.derivation.DeriveWalletPublicKeyTask as DeriveWalletPublicKeyCommand
 import com.tangem.sdk.extensions.init
 import java.io.ByteArrayOutputStream
 import java.math.BigInteger
@@ -95,6 +98,7 @@ class MainActivity : ComponentActivity() {
                                 callback: (CompletionResult<Unit>) -> Unit
                             ) {
                                 tryFindBip84PathForAddressInActiveSession(
+                                    session = session,
                                     cardId = cardId,
                                     masterWalletPub = masterWalletPub,
                                     hrp = dec.hrp,
@@ -110,25 +114,22 @@ class MainActivity : ComponentActivity() {
                                         return@tryFindBip84PathForAddressInActiveSession
                                     }
 
-                                    sdk.sign(
-                                        hash = digest,
-                                        walletPublicKey = masterWalletPub,
-                                        cardId = cardId,
-                                        derivationPath = foundPath,
+                                    session.request(
+                                        SignHashCommand(
+                                            hash = digest,
+                                            walletPublicKey = masterWalletPub,
+                                            derivationPath = foundPath,
+                                        )
                                     ) { signResult ->
                                         when (signResult) {
-                                            is CompletionResult.Success<*> -> {
-                                                val rawSig = when (val d = signResult.data) {
-                                                    is SignHashResponse -> d.signature
-                                                    is ByteArray -> d
-                                                    else -> null
-                                                }
-                                                if (rawSig == null || rawSig.size != 64) {
+                                            is CompletionResult.Success -> {
+                                                val rawSig = signResult.data.signature
+                                                if (rawSig.size != 64) {
                                                     mainHandler.post {
                                                         finishWork { onResult("Signature inattendue: ${signResult.data}") }
                                                         callback(CompletionResult.Success(Unit))
                                                     }
-                                                    return@sign
+                                                    return@request
                                                 }
 
                                                 val der = raw64ToDerLowS(rawSig)
@@ -150,7 +151,7 @@ class MainActivity : ComponentActivity() {
                                                     callback(CompletionResult.Success(Unit))
                                                 }
                                             }
-                                            is CompletionResult.Failure<*> -> {
+                                            is CompletionResult.Failure -> {
                                                 mainHandler.post {
                                                     finishWork { onResult("Erreur signature: ${signResult.error}") }
                                                     callback(CompletionResult.Success(Unit))
@@ -191,6 +192,7 @@ class MainActivity : ComponentActivity() {
     /** Recherche d’un chemin BIP84 qui correspond exactement à l’adresse P2WPKH donnée. */
 
     private fun tryFindBip84PathForAddressInActiveSession(
+        session: CardSession,
         cardId: String,
         masterWalletPub: ByteArray,
         hrp: String,
@@ -239,10 +241,11 @@ class MainActivity : ComponentActivity() {
 
             // IMPORTANT : cet appel est fait ALORS QUE la session est déjà ouverte ;
             // le SDK réutilise la session → pas de nouveau scan / code.
-            sdk.deriveWalletPublicKey(
-                walletPublicKey = masterWalletPub,
-                derivationPath = path,
-                cardId = cardId
+            session.request(
+                DeriveWalletPublicKeyCommand(
+                    walletPublicKey = masterWalletPub,
+                    derivationPath = path,
+                )
             ) { res: CompletionResult<*> ->
                 val derivedPub = when (res) {
                     is CompletionResult.Success<*> -> extractPub(res.data)
