@@ -16,7 +16,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.tangem.TangemSdk
 import com.tangem.common.CompletionResult
-import com.tangem.common.apdu.ResponseApdu
 import com.tangem.common.card.EllipticCurve
 import com.tangem.crypto.hdWallet.DerivationPath
 import com.tangem.common.core.CardSession
@@ -104,10 +103,10 @@ class MainActivity : ComponentActivity() {
                         val path = derivationPaths[index]
 
                         sdk.startSessionWithRunnable(
-                            object : com.tangem.common.core.CardSessionRunnable<Unit> {
+                            object : com.tangem.common.core.CardSessionRunnable<SignHashResponse> {
                                 override fun run(
                                     session: CardSession,
-                                    callback: (CompletionResult<Unit>) -> Unit
+                                    callback: (CompletionResult<SignHashResponse>) -> Unit
                                 ) {
                                     session.performCommand(
                                         SignHashCommand(
@@ -116,49 +115,49 @@ class MainActivity : ComponentActivity() {
                                             derivationPath = path
                                         )
                                     ) { signResult: CompletionResult<SignHashResponse> ->
-                                        when (signResult) {
-                                            is CompletionResult.Success<*> -> {
-                                                val response = signResult.data as SignHashResponse
-                                                val rawSig = response.signature
-                                                val der = raw64ToDerLowS(rawSig)
-                                                val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
-                                                val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(masterWalletPub))
-
-                                                mainHandler.post {
-                                                    onResult("🔎 Test chemin $path → adresse dérivée $derivedAddr")
-                                                }
-
-                                                if (derivedAddr == address) {
-                                                    mainHandler.post {
-                                                        finishWork {
-                                                            onResult(
-                                                                """
-                                                            ✅ Chemin trouvé: $path
-                                                            Adresse: $derivedAddr
-                                                            Signature DER (base64): $base64
-                                                            """.trimIndent()
-                                                            )
-                                                        }
-                                                        callback(CompletionResult.Success(Unit))
-                                                    }
-                                                } else {
-                                                    // continuer avec le prochain chemin
-                                                    tryNextPath(index + 1)
-                                                }
-                                            }
-                                            is CompletionResult.Failure<*> -> {
-                                                mainHandler.post {
-                                                    onResult("⚠️ Erreur signature avec chemin $path: ${signResult.error}")
-                                                }
-                                                tryNextPath(index + 1)
-                                            }
-                                        }
+                                        callback(signResult)
                                     }
                                 }
                             },
                             initialMessage = null,
                             cardId = cardId
-                        ) { }
+                        ) { signResult ->
+                            when (signResult) {
+                                is CompletionResult.Success -> {
+                                    val response = signResult.data
+                                    val rawSig = response.signature
+                                    val der = raw64ToDerLowS(rawSig)
+                                    val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
+                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(masterWalletPub))
+
+                                    mainHandler.post {
+                                        onResult("🔎 Test chemin $path → adresse dérivée $derivedAddr")
+                                    }
+
+                                    if (derivedAddr == address) {
+                                        mainHandler.post {
+                                            finishWork {
+                                                onResult(
+                                                    """
+                                                ✅ Chemin trouvé: $path
+                                                Adresse: $derivedAddr
+                                                Signature DER (base64): $base64
+                                                """.trimIndent()
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        tryNextPath(index + 1)
+                                    }
+                                }
+                                is CompletionResult.Failure -> {
+                                    mainHandler.post {
+                                        onResult("⚠️ Erreur signature avec chemin $path: ${signResult.error}")
+                                    }
+                                    tryNextPath(index + 1)
+                                }
+                            }
+                        }
                     }
 
                     // on commence avec le premier chemin
@@ -341,20 +340,6 @@ class MainActivity : ComponentActivity() {
         }
         return ret.toByteArray()
     }
-}
-
-private fun CardSession.performCommand(
-    signHashCommand: SignHashCommand,
-    function: Any
-) {
-}
-
-private fun CardSession.send(
-    apdu: SignHashCommand,
-    callback: (CompletionResult<ResponseApdu>) -> Unit
-) {
-}
-
 // ---------------- UI ----------------
 @Composable
 fun SignScreen(
