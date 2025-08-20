@@ -1,3 +1,5 @@
+// settings.gradle.kts
+
 pluginManagement {
     repositories {
         google {
@@ -11,15 +13,18 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        mavenLocal()                 // ← prend d'abord ce qui a été publié en local
         google()
         mavenCentral()
-        maven("https://jitpack.io")
+        maven(url = "https://jitpack.io")
     }
 }
 
-rootProject.name = "Tangem Signature"
+rootProject.name = "TangemSignature"
 include(":app")
- 
+
+// Pas de includeBuild ici (on utilise mavenLocal au lieu d’un composite build)

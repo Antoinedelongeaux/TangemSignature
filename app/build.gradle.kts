@@ -41,6 +41,7 @@ android {
 
 dependencies {
 
+    implementation("org.bitcoinj:bitcoinj-core:0.16.2")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -51,7 +52,7 @@ dependencies {
     implementation(libs.androidx.material3)
     // Use a specific commit hash instead of the moving `master` branch to
     // avoid timeouts when resolving the dependency from JitPack.
-    implementation("com.github.Tangem:tangem-sdk-android:6e11480528141cee83390bb7d65c6f0058d3997d")
+    implementation("com.github.Tangem:tangem-sdk-android:6e11480")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
@@ -59,4 +60,14 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // Moshi / Retrofit / OkHttp nécessaires au SDK au runtime
+    implementation("com.squareup.moshi:moshi:1.13.0")
+    implementation("com.squareup.moshi:moshi-kotlin:1.13.0")
+    implementation("com.squareup.retrofit2:retrofit:2.8.1")
+    implementation("com.squareup.retrofit2:converter-moshi:2.6.0")
+    implementation("com.squareup.okhttp3:okhttp:4.2.2")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.2.2")
+    implementation("com.squareup.moshi:moshi-adapters:1.13.0")
+
 }
