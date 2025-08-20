@@ -23,6 +23,7 @@ import com.tangem.common.card.EllipticCurve
 import com.tangem.crypto.hdWallet.DerivationPath
 import com.tangem.common.extensions.toHexString
 import com.tangem.common.core.CardSession
+//import com.tangem.common.core.CardSession
 import com.tangem.operations.sign.SignHashCommand
 import com.tangem.operations.sign.SignHashResponse
 import com.tangem.operations.derivation.DeriveWalletPublicKeyTask as DeriveWalletPublicKeyCommand
@@ -432,6 +433,12 @@ class MainActivity : ComponentActivity() {
 
 
 
+}
+
+private fun CardSession.request(
+    signHashCommand: SignHashCommand,
+    function: Any
+) {
 }
 
 // ---------------- UI ----------------
