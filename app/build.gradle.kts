@@ -49,7 +49,9 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation("com.github.Tangem:tangem-sdk-android:master")
+    // Use a specific commit hash instead of the moving `master` branch to
+    // avoid timeouts when resolving the dependency from JitPack.
+    implementation("com.github.Tangem:tangem-sdk-android:6e11480528141cee83390bb7d65c6f0058d3997d")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
