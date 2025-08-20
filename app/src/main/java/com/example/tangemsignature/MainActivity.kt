@@ -79,6 +79,8 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        onResult("🔍 Recherche du chemin BIP84…")
+
         sdk.scanCard { scanResult ->
             when (scanResult) {
                 is CompletionResult.Success<*> -> {
@@ -103,8 +105,13 @@ class MainActivity : ComponentActivity() {
                                     cardId = cardId,
                                     masterWalletPub = masterWalletPub,
                                     hrp = dec.hrp,
-                                    wantedProgram20 = dec.program20
-                                ) { foundPath, derivedPub, tried ->
+                                    wantedProgram20 = dec.program20,
+                                    onProgress = { attempt, path ->
+                                        mainHandler.post {
+                                            onResult("🔍 Recherche BIP84… essai $attempt\nDernier chemin: $path")
+                                        }
+                                    },
+                                    done = { foundPath, derivedPub, tried ->
                                     if (foundPath == null || derivedPub == null) {
                                         mainHandler.post {
                                             finishWork {
@@ -160,12 +167,12 @@ class MainActivity : ComponentActivity() {
                                             }
                                         }
                                     }
-                                }
-                            }
-                        },
-                        initialMessage = null,
-                        cardId = cardId
-                    ) { sessionResult: CompletionResult<Unit> ->
+                                    }
+                                )
+                            },
+                            initialMessage = null,
+                            cardId = cardId
+                        ) { sessionResult: CompletionResult<Unit> ->
                         // ✅ callback final obligatoire
                         when (sessionResult) {
                             is CompletionResult.Success -> {
@@ -198,14 +205,21 @@ class MainActivity : ComponentActivity() {
         masterWalletPub: ByteArray,
         hrp: String,
         wantedProgram20: ByteArray,
-        done: (DerivationPath?, ByteArray?, List<String>) -> Unit
+        maxAccount: Int = 2,
+        maxIndex: Int = 20,
+        onProgress: ((Int, String) -> Unit)? = null,
+        done: (DerivationPath?, ByteArray?, List<String>) -> Unit,
     ) {
         val tried = mutableListOf<String>()
 
-        // bornes de recherche raisonnables (peut s’élargir si besoin)
-        val maxAccount = 5     // accounts 0..4
-        val maxIndex = 200     // index 0..200
-        val coinType = 0       // 0' = mainnet, 1' = testnet
+        // Déduit le coinType à partir du HRP : bc -> 0, tb -> 1
+        val coinType = when (hrp) {
+            "tb" -> 1
+            else -> 0
+        }
+
+        var attempts = 0
+        val maxAttempts = maxAccount * 2 * (maxIndex + 1)
 
         fun extractPub(data: Any?): ByteArray? = when (data) {
             is ByteArray -> data
@@ -224,7 +238,7 @@ class MainActivity : ComponentActivity() {
 
         // Itération asynchrone : on enchaîne les derives dans la session courante
         fun next(account: Int, change: Int, index: Int) {
-            if (account >= maxAccount) {
+            if (account >= maxAccount || attempts >= maxAttempts) {
                 done(null, null, tried)
                 return
             }
@@ -239,6 +253,8 @@ class MainActivity : ComponentActivity() {
 
             val path = DerivationPath("m/84'/$coinType'/${account}'/$change/$index")
             tried += path.toString()
+            attempts++
+            onProgress?.invoke(attempts, path.toString())
 
             // IMPORTANT : cet appel est fait ALORS QUE la session est déjà ouverte ;
             // le SDK réutilise la session → pas de nouveau scan / code.
