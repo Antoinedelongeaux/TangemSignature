@@ -134,7 +134,8 @@ class MainActivity : ComponentActivity() {
                                     val rawSig = response.signature
                                     val der = raw64ToDerLowS(rawSig)
                                     val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
-                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(masterWalletPub))
+                                    val derivedPubKey = response.walletPublicKey ?: masterWalletPub
+                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(derivedPubKey))
 
                                     mainHandler.post {
                                         onResult("🔎 Test chemin $path → adresse dérivée $derivedAddr")
