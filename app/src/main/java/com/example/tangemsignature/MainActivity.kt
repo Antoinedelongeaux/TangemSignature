@@ -30,6 +30,7 @@ import org.bitcoinj.core.ECKey
 import org.bitcoinj.core.LegacyAddress
 import org.bitcoinj.core.SegwitAddress
 import org.bitcoinj.core.Utils
+import org.bitcoinj.core.Sha256Hash
 import org.bitcoinj.params.MainNetParams
 import org.bitcoinj.script.ScriptBuilder
 import java.io.ByteArrayOutputStream
@@ -199,7 +200,9 @@ class MainActivity : ComponentActivity() {
                             ) { deriveResult ->
                                 when (deriveResult) {
                                     is CompletionResult.Success -> {
-                                        val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(deriveResult.data.publicKey))
+                                        val derivedPub = deriveResult.data.publicKey
+                                        val compressedPub = compressIfNeeded(derivedPub)
+                                        val derivedAddr = p2wpkhAddress(dec.hrp, compressedPub)
                                         if (derivedAddr == address) {
                                             fun sign(retriesSign: Int = 1) {
                                                 sdk.startSessionWithRunnable(
@@ -214,13 +217,16 @@ class MainActivity : ComponentActivity() {
                                                     when (signResult) {
                                                         is CompletionResult.Success -> {
                                                             val rawSig = signResult.data.signature
-                                                            val der = raw64ToDerLowS(rawSig)
-                                                            val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
+                                                            val base64 = rawSigToMessageBase64(
+                                                                rawSig,
+                                                                digest,
+                                                                compressedPub
+                                                            )
                                                             mainHandler.post {
                                                                 finishWork {
                                                                     resultState.value = """✅ Chemin trouvé: $presetPath
 Adresse: $derivedAddr
-Signature DER (base64): $base64""".trimIndent()
+Signature (base64): $base64""".trimIndent()
                                                                 }
                                                             }
                                                         }
@@ -275,7 +281,8 @@ Signature DER (base64): $base64""".trimIndent()
                                 when (deriveResult) {
                                     is CompletionResult.Success -> {
                                         val derivedPub = deriveResult.data.publicKey
-                                        val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(derivedPub))
+                                        val compressedPub = compressIfNeeded(derivedPub)
+                                        val derivedAddr = p2wpkhAddress(dec.hrp, compressedPub)
 
                                         mainHandler.post {
                                             resultState.value = "🔎 Test chemin $path → adresse dérivée $derivedAddr"
@@ -294,13 +301,16 @@ Signature DER (base64): $base64""".trimIndent()
                                                 when (signResult) {
                                                     is CompletionResult.Success -> {
                                                         val rawSig = signResult.data.signature
-                                                        val der = raw64ToDerLowS(rawSig)
-                                                        val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
+                                                        val base64 = rawSigToMessageBase64(
+                                                            rawSig,
+                                                            digest,
+                                                            compressedPub
+                                                        )
                                                         mainHandler.post {
                                                             finishWork {
                                                                 resultState.value = """✅ Chemin trouvé: $path
 Adresse: $derivedAddr
-Signature DER (base64): $base64""".trimIndent()
+Signature (base64): $base64""".trimIndent()
                                                             }
                                                         }
                                                     }
@@ -375,35 +385,29 @@ Signature DER (base64): $base64""".trimIndent()
         return byteArrayOf(prefix) + xBytes
     }
 
-    private fun raw64ToDerLowS(sig: ByteArray): ByteArray {
-        if (sig.size != 64) return sig
-        val r = sig.copyOfRange(0, 32)
-        val s = sig.copyOfRange(32, 64)
-        val rBig = BigInteger(1, r)
-        val sBig = BigInteger(1, s)
-        val halfOrder = BigInteger(
-            "7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0",
-            16
-        )
-        val two = BigInteger.valueOf(2)
-        val sLow = if (sBig > halfOrder) {
-            BigInteger.ZERO.subtract(sBig.subtract(halfOrder.multiply(two)))
-        } else {
-            sBig
-        }
+    private fun rawSigToMessageBase64(sig: ByteArray, digest: ByteArray, pubCompressed: ByteArray): String {
+        if (sig.size != 64) return Base64.encodeToString(sig, Base64.NO_WRAP)
+        val r = BigInteger(1, sig.copyOfRange(0, 32))
+        val s = BigInteger(1, sig.copyOfRange(32, 64))
+        val signature = ECKey.ECDSASignature(r, s).toCanonicalised()
+        val hash = Sha256Hash.wrap(digest)
 
-        val rDer = derInteger(rBig)
-        val sDer = derInteger(sLow)
-        val seq = byteArrayOf(0x30, (rDer.size + sDer.size).toByte())
-        return seq + rDer + sDer
-    }
-
-    private fun derInteger(x: BigInteger): ByteArray {
-        var bytes = x.toByteArray()
-        if (bytes[0].toInt() and 0x80 != 0) {
-            bytes = byteArrayOf(0) + bytes
+        var recId = -1
+        for (i in 0..3) {
+            val key = ECKey.recoverFromSignature(i, signature, hash, true)
+            if (key != null && key.pubKey.contentEquals(pubCompressed)) {
+                recId = i
+                break
+            }
         }
-        return byteArrayOf(0x02, bytes.size.toByte()) + bytes
+        require(recId != -1) { "Cannot recover key from signature" }
+
+        val header = (27 + recId + 4).toByte()
+        val out = ByteArray(65)
+        out[0] = header
+        System.arraycopy(Utils.bigIntegerToBytes(signature.r, 32), 0, out, 1, 32)
+        System.arraycopy(Utils.bigIntegerToBytes(signature.s, 32), 0, out, 33, 32)
+        return Base64.encodeToString(out, Base64.NO_WRAP)
     }
 
     // --- Bech32 déjà dans ton code ---
