@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import com.tangem.TangemSdk
 import com.tangem.common.CompletionResult
 import com.tangem.common.card.EllipticCurve
+import com.tangem.common.core.TangemSdkError
 import com.tangem.crypto.hdWallet.DerivationPath
 import com.tangem.operations.derivation.DeriveMultipleWalletPublicKeysTask
 import com.tangem.operations.derivation.DeriveWalletPublicKeyTask
@@ -93,53 +94,66 @@ class MainActivity : ComponentActivity() {
                         DerivationPath("m/49'/0'/0'/0/0"),
                         DerivationPath("m/84'/0'/0'/0/0"),
                     )
-
-                    val derivationMap = mapOf(ByteArrayKey(masterWalletPub) to paths)
-
-                    sdk.startSessionWithRunnable(
-                        DeriveMultipleWalletPublicKeysTask(derivationMap),
-                        initialMessage = null,
-                        cardId = cardId,
-                    ) { deriveResult ->
-                        when (deriveResult) {
-                            is CompletionResult.Success -> {
-                                val params = MainNetParams.get()
-                                val entries = deriveResult.data.entries[ByteArrayKey(masterWalletPub)]
-                                val sb = StringBuilder()
-                                var found: DerivationPath? = null
-                                entries?.forEach { (path, extKey) ->
-                                    val pub = compressIfNeeded(extKey.publicKey)
-                                    val key = ECKey.fromPublicOnly(pub)
-                                    val addr = when {
-                                        path.toString().startsWith("m/44'") ->
-                                            LegacyAddress.fromKey(params, key).toString()
-                                        path.toString().startsWith("m/49'") -> {
-                                            val redeem = ScriptBuilder.createP2WPKHOutputScript(key)
-                                            val scriptHash = Utils.sha256hash160(redeem.program)
-                                            LegacyAddress.fromScriptHash(params, scriptHash).toString()
-                                        }
-                                        else -> SegwitAddress.fromKey(params, key).toString()
-                                    }
-                                    sb.append("Chemin $path → $addr\n")
-                                    if (addr == targetAddress) {
-                                        found = path
-                                    }
-                                }
-                                knownPath = found
-                                resultState.value = if (found != null) {
-                                    sb.append("\n✅ Chemin correspondant: $found").toString()
-                                } else {
-                                    sb.append("\n⚠️ Aucun chemin ne correspond à $targetAddress").toString()
-                                }
-                            }
-                            is CompletionResult.Failure -> {
-                                resultState.value = "Erreur dérivation initiale: ${deriveResult.error}"
-                            }
-                        }
-                    }
+                    deriveInitial(cardId, masterWalletPub, paths)
                 }
                 is CompletionResult.Failure -> {
                     resultState.value = "Erreur scan initial: ${scanResult.error}"
+                }
+            }
+        }
+    }
+
+    private fun deriveInitial(
+        cardId: String,
+        masterWalletPub: ByteArray,
+        paths: List<DerivationPath>,
+        retries: Int = 1,
+    ) {
+        val derivationMap = mapOf(ByteArrayKey(masterWalletPub) to paths)
+        sdk.startSessionWithRunnable(
+            DeriveMultipleWalletPublicKeysTask(derivationMap),
+            initialMessage = null,
+            cardId = cardId,
+        ) { deriveResult ->
+            when (deriveResult) {
+                is CompletionResult.Success -> {
+                    val params = MainNetParams.get()
+                    val entries = deriveResult.data.entries[ByteArrayKey(masterWalletPub)]
+                    val sb = StringBuilder()
+                    var found: DerivationPath? = null
+                    entries?.forEach { (path, extKey) ->
+                        val pub = compressIfNeeded(extKey.publicKey)
+                        val key = ECKey.fromPublicOnly(pub)
+                        val addr = when {
+                            path.toString().startsWith("m/44'") ->
+                                LegacyAddress.fromKey(params, key).toString()
+                            path.toString().startsWith("m/49'") -> {
+                                val redeem = ScriptBuilder.createP2WPKHOutputScript(key)
+                                val scriptHash = Utils.sha256hash160(redeem.program)
+                                LegacyAddress.fromScriptHash(params, scriptHash).toString()
+                            }
+                            else -> SegwitAddress.fromKey(params, key).toString()
+                        }
+                        sb.append("Chemin $path → $addr\n")
+                        if (addr == targetAddress) {
+                            found = path
+                        }
+                    }
+                    knownPath = found
+                    resultState.value = if (found != null) {
+                        sb.append("\n✅ Chemin correspondant: $found").toString()
+                    } else {
+                        sb.append("\n⚠️ Aucun chemin ne correspond à $targetAddress").toString()
+                    }
+                }
+                is CompletionResult.Failure -> {
+                    if (retries > 0 && deriveResult.error is TangemSdkError.Busy) {
+                        mainHandler.postDelayed({
+                            deriveInitial(cardId, masterWalletPub, paths, retries - 1)
+                        }, 500)
+                    } else {
+                        resultState.value = "Erreur dérivation initiale: ${deriveResult.error}"
+                    }
                 }
             }
         }
