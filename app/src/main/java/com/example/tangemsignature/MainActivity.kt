@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
     private val resultState = mutableStateOf("")
     private var knownPath: DerivationPath? = null
 
-    private val targetAddress = "bc1q4fj5w4vunuar7ep76yxa7vchn3xryrcgu8jnld"
+    private val targetAddress = "Renseigner ici votre adresse PUBLIQUE bitcoin"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
