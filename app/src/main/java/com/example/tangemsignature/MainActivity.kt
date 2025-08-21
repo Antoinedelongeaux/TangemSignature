@@ -18,9 +18,17 @@ import com.tangem.TangemSdk
 import com.tangem.common.CompletionResult
 import com.tangem.common.card.EllipticCurve
 import com.tangem.crypto.hdWallet.DerivationPath
+import com.tangem.operations.derivation.DeriveMultipleWalletPublicKeysTask
 import com.tangem.operations.derivation.DeriveWalletPublicKeyTask
 import com.tangem.operations.sign.SignHashCommand
 import com.tangem.sdk.extensions.init
+import com.tangem.common.extensions.ByteArrayKey
+import org.bitcoinj.core.ECKey
+import org.bitcoinj.core.LegacyAddress
+import org.bitcoinj.core.SegwitAddress
+import org.bitcoinj.core.Utils
+import org.bitcoinj.params.MainNetParams
+import org.bitcoinj.script.ScriptBuilder
 import java.io.ByteArrayOutputStream
 import java.math.BigInteger
 import java.nio.ByteBuffer
@@ -37,6 +45,9 @@ class MainActivity : ComponentActivity() {
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val isWorking = AtomicBoolean(false)
 
+    private val resultState = mutableStateOf("")
+    private var knownPath: DerivationPath? = null
+
     private val targetAddress = "bc1q4fj5w4vunuar7ep76yxa7vchn3xryrcgu8jnld"
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,11 +59,14 @@ class MainActivity : ComponentActivity() {
                 SignScreen(
                     initialMessage = "",
                     targetAddr = targetAddress,
-                    onSign = { msg, addr, setText -> signForAddress(msg, addr, setText) },
+                    resultState = resultState,
+                    onSign = { msg, addr -> signForAddress(msg, addr) },
                     onCopy = { label, text -> copyToClipboard(label, text) }
                 )
             }
         }
+
+        initializeWallet()
     }
 
     private fun copyToClipboard(label: String, text: String) {
@@ -60,16 +74,87 @@ class MainActivity : ComponentActivity() {
         cm.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
-    private fun signForAddress(message: String, address: String, onResult: (String) -> Unit) {
+    private fun initializeWallet() {
+        sdk.scanCard { scanResult ->
+            when (scanResult) {
+                is CompletionResult.Success<*> -> {
+                    val card = scanResult.data as? com.tangem.common.card.Card
+                    val wallet = card?.wallets?.firstOrNull { it.curve == EllipticCurve.Secp256k1 }
+                    if (card == null || wallet == null) {
+                        resultState.value = "❌ Aucun wallet secp256k1 trouvé."
+                        return@scanCard
+                    }
+
+                    val cardId = card.cardId!!
+                    val masterWalletPub = wallet.publicKey
+
+                    val paths = listOf(
+                        DerivationPath("m/44'/0'/0'/0/0"),
+                        DerivationPath("m/49'/0'/0'/0/0"),
+                        DerivationPath("m/84'/0'/0'/0/0"),
+                    )
+
+                    val derivationMap = mapOf(ByteArrayKey(masterWalletPub) to paths)
+
+                    sdk.startSessionWithRunnable(
+                        DeriveMultipleWalletPublicKeysTask(derivationMap),
+                        initialMessage = null,
+                        cardId = cardId,
+                    ) { deriveResult ->
+                        when (deriveResult) {
+                            is CompletionResult.Success -> {
+                                val params = MainNetParams.get()
+                                val entries = deriveResult.data.entries[ByteArrayKey(masterWalletPub)]
+                                val sb = StringBuilder()
+                                var found: DerivationPath? = null
+                                entries?.forEach { (path, extKey) ->
+                                    val pub = compressIfNeeded(extKey.publicKey)
+                                    val key = ECKey.fromPublicOnly(pub)
+                                    val addr = when {
+                                        path.toString().startsWith("m/44'") ->
+                                            LegacyAddress.fromKey(params, key).toString()
+                                        path.toString().startsWith("m/49'") -> {
+                                            val redeem = ScriptBuilder.createP2WPKHOutputScript(key)
+                                            val scriptHash = Utils.sha256hash160(redeem.program)
+                                            LegacyAddress.fromScriptHash(params, scriptHash).toString()
+                                        }
+                                        else -> SegwitAddress.fromKey(params, key).toString()
+                                    }
+                                    sb.append("Chemin $path → $addr\n")
+                                    if (addr == targetAddress) {
+                                        found = path
+                                    }
+                                }
+                                knownPath = found
+                                resultState.value = if (found != null) {
+                                    sb.append("\n✅ Chemin correspondant: $found").toString()
+                                } else {
+                                    sb.append("\n⚠️ Aucun chemin ne correspond à $targetAddress").toString()
+                                }
+                            }
+                            is CompletionResult.Failure -> {
+                                resultState.value = "Erreur dérivation initiale: ${deriveResult.error}"
+                            }
+                        }
+                    }
+                }
+                is CompletionResult.Failure -> {
+                    resultState.value = "Erreur scan initial: ${scanResult.error}"
+                }
+            }
+        }
+    }
+
+    private fun signForAddress(message: String, address: String) {
         if (!isWorking.compareAndSet(false, true)) {
-            onResult("⏳ Une opération est déjà en cours…")
+            resultState.value = "⏳ Une opération est déjà en cours…"
             return
         }
 
         val digest = bitcoinMessageDigest(message)
         val dec = decodeBech32P2WPKH(address)
         if (dec == null) {
-            finishWork { onResult("Adresse cible invalide.") }
+            finishWork { resultState.value = "Adresse cible invalide." }
             return
         }
 
@@ -79,54 +164,31 @@ class MainActivity : ComponentActivity() {
                     val card = scanResult.data as? com.tangem.common.card.Card
                     val wallet = card?.wallets?.firstOrNull { it.curve == EllipticCurve.Secp256k1 }
                     if (card == null || wallet == null) {
-                        finishWork { onResult("❌ Aucun wallet secp256k1 trouvé.") }
+                        finishWork { resultState.value = "❌ Aucun wallet secp256k1 trouvé." }
                         return@scanCard
                     }
 
                     val cardId = card.cardId!!
                     val masterWalletPub = wallet.publicKey
-
-                    // génère plusieurs chemins BIP84 à tester
-                    val derivationPaths = buildList {
-                        for (branch in 0..1) {
-                            for (index in 0 until 20) {
-                                add(DerivationPath("m/84'/0'/0'/$branch/$index"))
-                            }
-                        }
-                    }
-
-                    fun tryNextPath(i: Int) {
-                        if (i >= derivationPaths.size) {
-                            finishWork { onResult("❌ Aucun chemin BIP84 testé n’a correspondu à $address") }
-                            return
-                        }
-
-                        val path = derivationPaths[i]
-
-                        // dérive la clé publique pour calculer l'adresse correspondante
+                    val presetPath = knownPath
+                    if (presetPath != null) {
                         sdk.startSessionWithRunnable(
-                            DeriveWalletPublicKeyTask(masterWalletPub, path),
+                            DeriveWalletPublicKeyTask(masterWalletPub, presetPath),
                             initialMessage = null,
-                            cardId = cardId
+                            cardId = cardId,
                         ) { deriveResult ->
                             when (deriveResult) {
                                 is CompletionResult.Success -> {
-                                    val derivedPub = deriveResult.data.publicKey
-                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(derivedPub))
-
-                                    mainHandler.post {
-                                        onResult("🔎 Test chemin $path → adresse dérivée $derivedAddr")
-                                    }
-
+                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(deriveResult.data.publicKey))
                                     if (derivedAddr == address) {
                                         sdk.startSessionWithRunnable(
                                             SignHashCommand(
                                                 hash = digest,
                                                 walletPublicKey = masterWalletPub,
-                                                derivationPath = path
+                                                derivationPath = presetPath,
                                             ),
                                             initialMessage = null,
-                                            cardId = cardId
+                                            cardId = cardId,
                                         ) { signResult ->
                                             when (signResult) {
                                                 is CompletionResult.Success -> {
@@ -135,46 +197,108 @@ class MainActivity : ComponentActivity() {
                                                     val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
                                                     mainHandler.post {
                                                         finishWork {
-                                                            onResult(
-                                                                """
-                                                            ✅ Chemin trouvé: $path
-                                                            Adresse: $derivedAddr
-                                                            Signature DER (base64): $base64
-                                                            """.trimIndent(),
-                                                            )
+                                                            resultState.value = """✅ Chemin trouvé: $presetPath
+Adresse: $derivedAddr
+Signature DER (base64): $base64""".trimIndent()
                                                         }
                                                     }
                                                 }
                                                 is CompletionResult.Failure -> {
-                                                    finishWork { onResult("⚠️ Erreur signature: ${signResult.error}") }
+                                                    finishWork { resultState.value = "⚠️ Erreur signature: ${signResult.error}" }
                                                 }
                                             }
                                         }
                                     } else {
-                                        tryNextPath(i + 1)
+                                        finishWork { resultState.value = "⚠️ Le chemin enregistré ne correspond pas à l'adresse fournie." }
                                     }
                                 }
                                 is CompletionResult.Failure -> {
-                                    mainHandler.post {
-                                        onResult("⚠️ Erreur dérivation avec chemin $path: ${deriveResult.error}")
-                                    }
-                                    tryNextPath(i + 1)
+                                    finishWork { resultState.value = "⚠️ Erreur dérivation: ${deriveResult.error}" }
                                 }
                             }
                         }
+                    } else {
+                        val derivationPaths = buildList {
+                            for (branch in 0..1) {
+                                for (index in 0 until 20) {
+                                    add(DerivationPath("m/84'/0'/0'/$branch/$index"))
+                                }
+                            }
+                        }
+
+                        fun tryNextPath(i: Int) {
+                            if (i >= derivationPaths.size) {
+                                finishWork { resultState.value = "❌ Aucun chemin BIP84 testé n’a correspondu à $address" }
+                                return
+                            }
+
+                            val path = derivationPaths[i]
+
+                            sdk.startSessionWithRunnable(
+                                DeriveWalletPublicKeyTask(masterWalletPub, path),
+                                initialMessage = null,
+                                cardId = cardId,
+                            ) { deriveResult ->
+                                when (deriveResult) {
+                                    is CompletionResult.Success -> {
+                                        val derivedPub = deriveResult.data.publicKey
+                                        val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(derivedPub))
+
+                                        mainHandler.post {
+                                            resultState.value = "🔎 Test chemin $path → adresse dérivée $derivedAddr"
+                                        }
+
+                                        if (derivedAddr == address) {
+                                            sdk.startSessionWithRunnable(
+                                                SignHashCommand(
+                                                    hash = digest,
+                                                    walletPublicKey = masterWalletPub,
+                                                    derivationPath = path,
+                                                ),
+                                                initialMessage = null,
+                                                cardId = cardId,
+                                            ) { signResult ->
+                                                when (signResult) {
+                                                    is CompletionResult.Success -> {
+                                                        val rawSig = signResult.data.signature
+                                                        val der = raw64ToDerLowS(rawSig)
+                                                        val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
+                                                        mainHandler.post {
+                                                            finishWork {
+                                                                resultState.value = """✅ Chemin trouvé: $path
+Adresse: $derivedAddr
+Signature DER (base64): $base64""".trimIndent()
+                                                            }
+                                                        }
+                                                    }
+                                                    is CompletionResult.Failure -> {
+                                                        finishWork { resultState.value = "⚠️ Erreur signature: ${signResult.error}" }
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            tryNextPath(i + 1)
+                                        }
+                                    }
+                                    is CompletionResult.Failure -> {
+                                        mainHandler.post {
+                                            resultState.value = "⚠️ Erreur dérivation avec chemin $path: ${deriveResult.error}"
+                                        }
+                                        tryNextPath(i + 1)
+                                    }
+                                }
+                            }
+                        }
+
+                        tryNextPath(0)
                     }
-
-                    // commence avec le premier chemin
-                    tryNextPath(0)
                 }
-
                 is CompletionResult.Failure -> {
-                    finishWork { onResult("Erreur scan: ${scanResult.error}") }
+                    finishWork { resultState.value = "Erreur scan: ${scanResult.error}" }
                 }
             }
         }
     }
-
 
     private fun finishWork(action: () -> Unit) {
         runOnUiThread { try { action() } finally { isWorking.set(false) } }
@@ -350,12 +474,13 @@ class MainActivity : ComponentActivity() {
 fun SignScreen(
     initialMessage: String,
     targetAddr: String,
-    onSign: (String, String, (String) -> Unit) -> Unit,
+    resultState: MutableState<String>,
+    onSign: (String, String) -> Unit,
     onCopy: (String, String) -> Unit
 ) {
     var message by remember { mutableStateOf(initialMessage) }
-    var resultText by remember { mutableStateOf("") }
     var address by remember { mutableStateOf(targetAddr) }
+    var resultText by resultState
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -374,7 +499,7 @@ fun SignScreen(
             modifier = Modifier.fillMaxWidth()
         )
         Row {
-            Button(onClick = { onSign(message, address) { resultText = it } }) {
+            Button(onClick = { onSign(message, address) }) {
                 Text("Signer (Bitcoin)")
             }
             Spacer(Modifier.width(12.dp))
