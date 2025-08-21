@@ -352,10 +352,13 @@ Signature (base64): $base64""".trimIndent()
     private fun bitcoinMessageDigest(message: String): ByteArray {
         val prefix = "Bitcoin Signed Message:\n"
         val data = ByteArrayOutputStream()
-        data.write(varInt(prefix.length))
-        data.write(prefix.toByteArray())
-        data.write(varInt(message.length))
-        data.write(message.toByteArray())
+        // Follow the "Bitcoin Signed Message" standard and always use byte counts
+        val prefixBytes = prefix.toByteArray()
+        val messageBytes = message.toByteArray()
+        data.write(varInt(prefixBytes.size))
+        data.write(prefixBytes)
+        data.write(varInt(messageBytes.size))
+        data.write(messageBytes)
         return sha256(sha256(data.toByteArray()))
     }
 
@@ -374,15 +377,20 @@ Signature (base64): $base64""".trimIndent()
     }
 
     private fun compressIfNeeded(pubKey: ByteArray): ByteArray {
+        // Tangem may return an uncompressed 65-byte key starting with 0x04.
+        // Instead of relying on JCE key parsing (which expects X.509 format),
+        // we manually compress the raw coordinates so that the resulting
+        // key can be used reliably for address derivation and signature checks.
         if (pubKey.size == 33) return pubKey // déjà compressé
-        val kf = KeyFactory.getInstance("EC")
-        val pk = kf.generatePublic(X509EncodedKeySpec(pubKey)) as ECPublicKey
-        val x = pk.w.affineX
-        val y = pk.w.affineY
-        val prefix: Byte = if (y.testBit(0)) 0x03 else 0x02
-        val xb = x.toByteArray()
-        val xBytes = if (xb.size == 33 && xb[0] == 0.toByte()) xb.copyOfRange(1, 33) else xb
-        return byteArrayOf(prefix) + xBytes
+
+        require(pubKey.size == 65 && pubKey[0] == 0x04.toByte()) {
+            "Invalid uncompressed public key"
+        }
+
+        val x = pubKey.copyOfRange(1, 33)
+        val y = pubKey.copyOfRange(33, 65)
+        val prefix: Byte = if ((y.last().toInt() and 1) == 1) 0x03 else 0x02
+        return byteArrayOf(prefix) + x
     }
 
     private fun rawSigToMessageBase64(sig: ByteArray, digest: ByteArray, pubCompressed: ByteArray): String {
