@@ -3,12 +3,14 @@ package com.example.tangemsignature
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -69,9 +71,12 @@ class MainActivity : ComponentActivity() {
         initializeWallet()
     }
 
+    @RequiresApi(Build.VERSION_CODES.HONEYCOMB)
     private fun copyToClipboard(label: String, text: String) {
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        cm.setPrimaryClip(ClipData.newPlainText(label, text))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
+            cm.setPrimaryClip(ClipData.newPlainText(label, text))
+        }
     }
 
     private fun initializeWallet() {
