@@ -191,51 +191,65 @@ class MainActivity : ComponentActivity() {
                     val masterWalletPub = wallet.publicKey
                     val presetPath = knownPath
                     if (presetPath != null) {
-                        sdk.startSessionWithRunnable(
-                            DeriveWalletPublicKeyTask(masterWalletPub, presetPath),
-                            initialMessage = null,
-                            cardId = cardId,
-                        ) { deriveResult ->
-                            when (deriveResult) {
-                                is CompletionResult.Success -> {
-                                    val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(deriveResult.data.publicKey))
-                                    if (derivedAddr == address) {
-                                        sdk.startSessionWithRunnable(
-                                            SignHashCommand(
-                                                hash = digest,
-                                                walletPublicKey = masterWalletPub,
-                                                derivationPath = presetPath,
-                                            ),
-                                            initialMessage = null,
-                                            cardId = cardId,
-                                        ) { signResult ->
-                                            when (signResult) {
-                                                is CompletionResult.Success -> {
-                                                    val rawSig = signResult.data.signature
-                                                    val der = raw64ToDerLowS(rawSig)
-                                                    val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
-                                                    mainHandler.post {
-                                                        finishWork {
-                                                            resultState.value = """✅ Chemin trouvé: $presetPath
+                        fun deriveAndSign(retries: Int = 1) {
+                            sdk.startSessionWithRunnable(
+                                DeriveWalletPublicKeyTask(masterWalletPub, presetPath),
+                                initialMessage = null,
+                                cardId = cardId,
+                            ) { deriveResult ->
+                                when (deriveResult) {
+                                    is CompletionResult.Success -> {
+                                        val derivedAddr = p2wpkhAddress(dec.hrp, compressIfNeeded(deriveResult.data.publicKey))
+                                        if (derivedAddr == address) {
+                                            fun sign(retriesSign: Int = 1) {
+                                                sdk.startSessionWithRunnable(
+                                                    SignHashCommand(
+                                                        hash = digest,
+                                                        walletPublicKey = masterWalletPub,
+                                                        derivationPath = presetPath,
+                                                    ),
+                                                    initialMessage = null,
+                                                    cardId = cardId,
+                                                ) { signResult ->
+                                                    when (signResult) {
+                                                        is CompletionResult.Success -> {
+                                                            val rawSig = signResult.data.signature
+                                                            val der = raw64ToDerLowS(rawSig)
+                                                            val base64 = Base64.encodeToString(der, Base64.NO_WRAP)
+                                                            mainHandler.post {
+                                                                finishWork {
+                                                                    resultState.value = """✅ Chemin trouvé: $presetPath
 Adresse: $derivedAddr
 Signature DER (base64): $base64""".trimIndent()
+                                                                }
+                                                            }
+                                                        }
+                                                        is CompletionResult.Failure -> {
+                                                            if (retriesSign > 0 && signResult.error is TangemSdkError.Busy) {
+                                                                mainHandler.postDelayed({ sign(retriesSign - 1) }, 500)
+                                                            } else {
+                                                                finishWork { resultState.value = "⚠️ Erreur signature: ${signResult.error}" }
+                                                            }
                                                         }
                                                     }
                                                 }
-                                                is CompletionResult.Failure -> {
-                                                    finishWork { resultState.value = "⚠️ Erreur signature: ${signResult.error}" }
-                                                }
                                             }
+                                            sign()
+                                        } else {
+                                            finishWork { resultState.value = "⚠️ Le chemin enregistré ne correspond pas à l'adresse fournie." }
                                         }
-                                    } else {
-                                        finishWork { resultState.value = "⚠️ Le chemin enregistré ne correspond pas à l'adresse fournie." }
                                     }
-                                }
-                                is CompletionResult.Failure -> {
-                                    finishWork { resultState.value = "⚠️ Erreur dérivation: ${deriveResult.error}" }
+                                    is CompletionResult.Failure -> {
+                                        if (retries > 0 && deriveResult.error is TangemSdkError.Busy) {
+                                            mainHandler.postDelayed({ deriveAndSign(retries - 1) }, 500)
+                                        } else {
+                                            finishWork { resultState.value = "⚠️ Erreur dérivation: ${deriveResult.error}" }
+                                        }
+                                    }
                                 }
                             }
                         }
+                        deriveAndSign()
                     } else {
                         val derivationPaths = buildList {
                             for (branch in 0..1) {
